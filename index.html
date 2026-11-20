@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Cortes</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: [
+              '-apple-system',
+              'BlinkMacSystemFont',
+              '"SF Pro Display"',
+              '"SF Pro Text"',
+              '"Helvetica Neue"',
+              'Arial',
+              'sans-serif',
+            ],
+          },
+          colors: {
+            iosBg: '#000000',
+            iosCard: '#1C1C1E',
+            iosElevated: '#2C2C2E',
+            iosBlue: '#0A84FF',
+            iosMuted: '#8E8E93',
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    body {
+      background-color: #000000;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    .ambient-backdrop {
+      background:
+        radial-gradient(60% 45% at 50% 0%, rgba(10, 132, 255, 0.11) 0%, rgba(0, 0, 0, 0) 100%),
+        #000000;
+    }
+
+    .ios-glass {
+      background: rgba(28, 28, 30, 0.78);
+      backdrop-filter: blur(28px);
+      -webkit-backdrop-filter: blur(28px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .ios-segmented {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      padding: 4px;
+      border-radius: 16px;
+      background: rgba(118, 118, 128, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .ios-segmented-thumb {
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      left: 4px;
+      width: calc((100% - 8px) / 3);
+      border-radius: 12px;
+      background: #3A3A3C;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.42), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+      transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+      pointer-events: none;
+    }
+
+    .ios-segmented button {
+      position: relative;
+      z-index: 1;
+      height: 38px;
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      color: #A1A1A6;
+      transition: color 0.2s ease;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .ios-segmented button[aria-checked="true"] {
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .tabular-nums {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .fade-in {
+      animation: fadeUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .progress-fill {
+      transition: width 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    video::-webkit-media-controls-panel {
+      background-image: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+    }
+  </style>
+</head>
+<body class="min-h-screen ambient-backdrop selection:bg-[#0A84FF]/30 selection:text-white">
+  <main class="min-h-screen w-full flex flex-col items-center justify-center px-5 py-12 sm:py-16">
+    <!-- TELA 1: INICIAL (CENTRALIZADA E MINIMALISTA) -->
+    <section id="view-home" class="w-full max-w-[460px] space-y-8 fade-in">
+      <div class="text-center space-y-2.5 px-2">
+        <h1
+          class="text-[34px] sm:text-[40px] font-semibold tracking-[-0.03em] text-white leading-[1.1]"
+          style="text-wrap: balance;"
+        >
+          Crie cortes em segundos
+        </h1>
+        <p class="text-[15px] sm:text-[16px] text-[#8E8E93] font-normal leading-relaxed">
+          Cole o link de um vídeo do YouTube e receba os melhores momentos prontos para postar.
+        </p>
+      </div>
+
+      <!-- Cartão principal estilo iOS -->
+      <form id="clip-form" class="ios-glass rounded-3xl p-6 sm:p-7 space-y-6 shadow-[0_24px_80px_rgba(0,0,0,0.65)]" novalidate>
+        <!-- Campo do link -->
+        <div class="space-y-3">
+          <label for="youtube-url" class="block text-[13px] font-medium text-[#A1A1A6] pl-1">
+            Link do vídeo
+          </label>
+          <div class="relative">
+            <input
+              id="youtube-url"
+              name="url"
+              type="url"
+              required
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Cole o link do vídeo"
+              class="w-full h-[52px] pl-4 pr-11 rounded-2xl bg-black/55 border border-white/[0.10] text-[15px] text-white placeholder-[#636366] focus:outline-none focus:border-[#0A84FF] focus:ring-4 focus:ring-[#0A84FF]/20 transition-all"
+            />
+            <button
+              id="clear-url-btn"
+              type="button"
+              aria-label="Limpar link"
+              class="hidden absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-white/15 hover:bg-white/25 text-white/80 flex items-center justify-center transition-colors"
+            >
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Capa automática do vídeo colado -->
+          <div
+            id="thumb-preview"
+            class="hidden overflow-hidden rounded-2xl bg-black/60 border border-white/[0.08] fade-in"
+          >
+            <div class="relative aspect-video w-full overflow-hidden bg-[#141416]">
+              <img
+                id="thumb-img"
+                src=""
+                alt="Capa do vídeo selecionado"
+                referrerpolicy="no-referrer"
+                class="w-full h-full object-cover transition-opacity duration-300"
+              />
+              <div class="absolute inset-0 bg-gradient-to-t from-black/75 via-transparent to-transparent"></div>
+              <div class="absolute bottom-3 left-3.5 right-3.5 flex items-center justify-between gap-2">
+                <span class="text-[12px] font-medium text-white/95 tracking-[-0.01em]">
+                  Vídeo pronto para cortar
+                </span>
+                <span class="w-5 h-5 rounded-full bg-[#30D158]/90 text-black flex items-center justify-center shrink-0">
+                  <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Segmented Control 1: Quantidade de cortes -->
+        <div class="space-y-2">
+          <span class="block text-[13px] font-medium text-[#A1A1A6] pl-1">
+            Quantidade de cortes
+          </span>
+          <div id="count-control" class="ios-segmented" role="radiogroup" aria-label="Quantidade de cortes">
+            <div id="count-thumb" class="ios-segmented-thumb" style="transform: translateX(0%);"></div>
+            <button type="button" role="radio" aria-checked="true" data-count="3" data-index="0">
+              3
+            </button>
+            <button type="button" role="radio" aria-checked="false" data-count="4" data-index="1">
+              4
+            </button>
+            <button type="button" role="radio" aria-checked="false" data-count="5" data-index="2">
+              5
+            </button>
+          </div>
+        </div>
+
+        <!-- Segmented Control 2: Estilo -->
+        <div class="space-y-2">
+          <span class="block text-[13px] font-medium text-[#A1A1A6] pl-1">
+            Estilo dos cortes
+          </span>
+          <div id="style-control" class="ios-segmented" role="radiogroup" aria-label="Estilo dos cortes">
+            <div id="style-thumb" class="ios-segmented-thumb" style="transform: translateX(0%);"></div>
+            <button type="button" role="radio" aria-checked="true" data-style="viral" data-index="0">
+              Viral
+            </button>
+            <button type="button" role="radio" aria-checked="false" data-style="engracado" data-index="1">
+              Engraçado
+            </button>
+            <button type="button" role="radio" aria-checked="false" data-style="educativo" data-index="2">
+              Educativo
+            </button>
+          </div>
+        </div>
+
+        <!-- Mensagem de erro limpa -->
+        <div
+          id="error-box"
+          role="alert"
+          class="hidden rounded-2xl bg-[#FF453A]/15 border border-[#FF453A]/30 px-4 py-3.5 text-[14px] text-[#FFD1CE] leading-snug fade-in"
+        >
+          <p id="error-message"></p>
+        </div>
+
+        <!-- Botão principal estilo Apple -->
+        <button
+          id="submit-btn"
+          type="submit"
+          class="w-full h-[52px] rounded-2xl bg-[#0A84FF] hover:bg-[#1E90FF] active:scale-[0.985] disabled:opacity-50 text-white font-semibold text-[16px] tracking-[-0.01em] transition-all cursor-pointer shadow-[0_8px_24px_rgba(10,132,255,0.32)]"
+        >
+          Criar Cortes
+        </button>
+      </form>
+    </section>
+
+    <!-- TELA 2: PROCESSAMENTO (FORMULÁRIO OCULTO, APENAS PROGRESSO FLUIDO) -->
+    <section id="view-progress" class="hidden w-full max-w-[420px] fade-in">
+      <div class="ios-glass rounded-3xl p-7 sm:p-8 space-y-6 text-center shadow-[0_24px_80px_rgba(0,0,0,0.65)]">
+        <div
+          id="progress-thumb-wrap"
+          class="hidden mx-auto w-full aspect-video rounded-2xl overflow-hidden bg-black/50 border border-white/[0.08]"
+        >
+          <img
+            id="progress-thumb-img"
+            src=""
+            alt="Capa do vídeo em processamento"
+            referrerpolicy="no-referrer"
+            class="w-full h-full object-cover opacity-85"
+          />
+        </div>
+
+        <div class="space-y-2">
+          <p id="progress-message" class="text-[18px] font-semibold tracking-[-0.02em] text-white">
+            Lendo o vídeo...
+          </p>
+          <p id="progress-subtext" class="text-[14px] text-[#8E8E93]">
+            Isso costuma levar apenas alguns instantes.
+          </p>
+        </div>
+
+        <div class="space-y-2.5 pt-1">
+          <div class="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+            <div
+              id="progress-bar"
+              class="h-full rounded-full bg-[#0A84FF] progress-fill"
+              style="width: 8%;"
+            ></div>
+          </div>
+          <p id="progress-percent" class="text-[13px] font-medium text-[#8E8E93] tabular-nums">
+            8%
+          </p>
+        </div>
+
+        <button
+          id="cancel-btn"
+          type="button"
+          class="pt-1 text-[14px] font-medium text-[#8E8E93] hover:text-white transition-colors cursor-pointer"
+        >
+          Cancelar
+        </button>
+      </div>
+    </section>
+
+    <!-- TELA 3: RESULTADOS (CARDS VERTICAIS LIMPOS COM PLAYER E SALVAR VÍDEO) -->
+    <section id="view-results" class="hidden w-full max-w-5xl space-y-8 fade-in">
+      <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 px-1">
+        <div class="space-y-1">
+          <h2 class="text-[28px] sm:text-[32px] font-semibold tracking-[-0.03em] text-white leading-tight">
+            Seus cortes
+          </h2>
+          <p id="results-summary" class="text-[15px] text-[#8E8E93]"></p>
+        </div>
+
+        <button
+          id="new-video-btn"
+          type="button"
+          class="h-11 px-5 rounded-full bg-[#1C1C1E] hover:bg-[#2C2C2E] border border-white/[0.10] text-[14px] font-medium text-white transition-colors self-start sm:self-auto whitespace-nowrap cursor-pointer"
+        >
+          Novo vídeo
+        </button>
+      </div>
+
+      <div id="clips-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      clipCount: 3,
+      style: 'viral',
+      videoId: null,
+      thumbUrl: '',
+      eventSource: null,
+    };
+
+    const viewHome = document.getElementById('view-home');
+    const viewProgress = document.getElementById('view-progress');
+    const viewResults = document.getElementById('view-results');
+
+    const form = document.getElementById('clip-form');
+    const urlInput = document.getElementById('youtube-url');
+    const clearUrlBtn = document.getElementById('clear-url-btn');
+    const thumbPreview = document.getElementById('thumb-preview');
+    const thumbImg = document.getElementById('thumb-img');
+
+    const countThumb = document.getElementById('count-thumb');
+    const styleThumb = document.getElementById('style-thumb');
+    const countButtons = document.querySelectorAll('#count-control button');
+    const styleButtons = document.querySelectorAll('#style-control button');
+
+    const errorBox = document.getElementById('error-box');
+    const errorMessage = document.getElementById('error-message');
+
+    const progressThumbWrap = document.getElementById('progress-thumb-wrap');
+    const progressThumbImg = document.getElementById('progress-thumb-img');
+    const progressMessage = document.getElementById('progress-message');
+    const progressSubtext = document.getElementById('progress-subtext');
+    const progressBar = document.getElementById('progress-bar');
+    const progressPercent = document.getElementById('progress-percent');
+    const cancelBtn = document.getElementById('cancel-btn');
+
+    const resultsSummary = document.getElementById('results-summary');
+    const clipsGrid = document.getElementById('clips-grid');
+    const newVideoBtn = document.getElementById('new-video-btn');
+
+    function extractYoutubeId(raw) {
+      const value = (raw || '').trim();
+      if (!value) return null;
+
+      try {
+        const normalized = /^https?:\/\//i.test(value) ? value : 'https://' + value;
+        const parsed = new URL(normalized);
+        const host = parsed.hostname.toLowerCase().replace(/^www\./, '').replace(/^m\./, '');
+        let id = '';
+
+        if (host === 'youtu.be') {
+          id = parsed.pathname.replace(/^\/+/, '').split('/')[0];
+        } else if (host === 'youtube.com' || host === 'music.youtube.com') {
+          if (parsed.pathname === '/watch') {
+            id = parsed.searchParams.get('v') || '';
+          } else {
+            const parts = parsed.pathname.split('/').filter(Boolean);
+            if (parts.length >= 2 && ['live', 'shorts', 'embed', 'v'].includes(parts[0])) {
+              id = parts[1];
+            }
+          }
+        }
+        return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function updateThumbnailPreview() {
+      const val = urlInput.value.trim();
+      clearUrlBtn.classList.toggle('hidden', !val);
+
+      const id = extractYoutubeId(val);
+      if (!id) {
+        state.videoId = null;
+        state.thumbUrl = '';
+        thumbPreview.classList.add('hidden');
+        return;
+      }
+
+      if (state.videoId === id) return;
+      state.videoId = id;
+      const hiRes = `https://i.ytimg.com/vi/${id}/maxresdefault.jpg`;
+      const fallback = `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+      state.thumbUrl = hiRes;
+
+      thumbImg.onerror = () => {
+        if (thumbImg.src !== fallback) {
+          state.thumbUrl = fallback;
+          thumbImg.src = fallback;
+        } else {
+          thumbPreview.classList.add('hidden');
+        }
+      };
+      thumbImg.onload = () => {
+        if (thumbImg.naturalWidth <= 120 && thumbImg.src !== fallback) {
+          state.thumbUrl = fallback;
+          thumbImg.src = fallback;
+        }
+      };
+      thumbImg.src = hiRes;
+      thumbPreview.classList.remove('hidden');
+      hideError();
+    }
+
+    function showView(name) {
+      viewHome.classList.toggle('hidden', name !== 'home');
+      viewProgress.classList.toggle('hidden', name !== 'progress');
+      viewResults.classList.toggle('hidden', name !== 'results');
+    }
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorBox.classList.remove('hidden');
+    }
+
+    function hideError() {
+      errorBox.classList.add('hidden');
+      errorMessage.textContent = '';
+    }
+
+    // Converte qualquer retorno técnico em frases simples e humanas
+    function humanizeStage(stage, rawMessage) {
+      const step = Number(stage) || 1;
+      if (step === 1) {
+        return {
+          title: 'Analisando o vídeo...',
+          sub: 'Lendo o conteúdo para encontrar os trechos mais marcantes.',
+        };
+      }
+      if (step === 2) {
+        return {
+          title: 'Escolhendo os melhores momentos...',
+          sub: 'Selecionando os trechos com maior potencial no estilo escolhido.',
+        };
+      }
+      if (step === 3) {
+        const match = String(rawMessage || '').match(/(\d+)\s+de\s+(\d+)/i);
+        return {
+          title: match
+            ? `Finalizando corte ${match[1]} de ${match[2]}...`
+            : 'Finalizando seus cortes...',
+          sub: 'Ajustando cada vídeo no formato vertical.',
+        };
+      }
+      return {
+        title: 'Tudo pronto!',
+        sub: 'Seus vídeos foram preparados com sucesso.',
+      };
+    }
+
+    function humanizeError(rawError) {
+      const text = String(rawError || '').toLowerCase();
+      if (!text) return 'Não foi possível criar os cortes agora. Tente novamente em instantes.';
+      if (text.includes('inválido') || text.includes('link')) {
+        return 'Esse link não parece ser de um vídeo do YouTube. Verifique e tente novamente.';
+      }
+      if (text.includes('legenda') || text.includes('transcri')) {
+        return 'Este vídeo não tem legendas disponíveis. Tente usar outro vídeo.';
+      }
+      if (text.includes('privado') || text.includes('indisponível') || text.includes('idade')) {
+        return 'Este vídeo está privado ou restrito e não pode ser acessado.';
+      }
+      if (text.includes('curto')) {
+        return 'Este vídeo é muito curto para gerar cortes. Tente um vídeo mais longo.';
+      }
+      if (text.includes('chave') || text.includes('key') || text.includes('variável')) {
+        return 'O aplicativo ainda precisa ser configurado antes do primeiro uso.';
+      }
+      return 'Não foi possível finalizar os cortes deste vídeo agora. Tente novamente em alguns instantes.';
+    }
+
+    function formatDuration(seconds) {
+      const total = Math.max(1, Math.round(Number(seconds) || 0));
+      const m = Math.floor(total / 60);
+      const s = total % 60;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function setProgress(stage, percent, rawMessage) {
+      const copy = humanizeStage(stage, rawMessage);
+      const clamped = Math.max(5, Math.min(100, Number(percent) || 10));
+      progressMessage.textContent = copy.title;
+      progressSubtext.textContent = copy.sub;
+      progressBar.style.width = `${clamped}%`;
+      progressPercent.textContent = `${clamped}%`;
+    }
+
+    function renderClips(clips) {
+      clipsGrid.innerHTML = '';
+      resultsSummary.textContent =
+        clips.length === 1
+          ? '1 vídeo vertical pronto para salvar'
+          : `${clips.length} vídeos verticais prontos para salvar`;
+
+      clips.forEach((clip, idx) => {
+        const card = document.createElement('article');
+        card.className = 'ios-glass rounded-3xl overflow-hidden flex flex-col shadow-[0_18px_50px_rgba(0,0,0,0.55)]';
+
+        const durationLabel = formatDuration(clip.duration);
+        const title = (clip.title || `Corte ${idx + 1}`).trim();
+
+        card.innerHTML = `
+          <div class="relative aspect-[9/16] w-full bg-black overflow-hidden">
+            <video
+              controls
+              playsinline
+              preload="metadata"
+              class="w-full h-full object-contain bg-black"
+              src="${escapeHtml(clip.video_url)}"
+            ></video>
+          </div>
+          <div class="p-5 flex-1 flex flex-col justify-between gap-4">
+            <div class="space-y-1.5">
+              <p class="text-[12px] font-medium text-[#8E8E93] tabular-nums">
+                Corte ${idx + 1} · ${durationLabel}
+              </p>
+              <h3 class="text-[16px] font-semibold tracking-[-0.015em] text-white leading-snug">
+                ${escapeHtml(title)}
+              </h3>
+            </div>
+            <a
+              href="${escapeHtml(clip.download_url)}"
+              download
+              class="w-full h-11 rounded-2xl bg-white hover:bg-white/90 active:scale-[0.985] text-black font-semibold text-[14px] tracking-[-0.01em] transition-all inline-flex items-center justify-center whitespace-nowrap"
+            >
+              Salvar Vídeo
+            </a>
+          </div>
+        `;
+        clipsGrid.appendChild(card);
+      });
+
+      showView('results');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function stopStream() {
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
+    }
+
+    // Eventos de Segmented Control (Quantidade)
+    countButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.index);
+        state.clipCount = Number(btn.dataset.count);
+        countThumb.style.transform = `translateX(${idx * 100}%)`;
+        countButtons.forEach((b) => b.setAttribute('aria-checked', b === btn ? 'true' : 'false'));
+      });
+    });
+
+    // Eventos de Segmented Control (Estilo)
+    styleButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.index);
+        state.style = btn.dataset.style;
+        styleThumb.style.transform = `translateX(${idx * 100}%)`;
+        styleButtons.forEach((b) => b.setAttribute('aria-checked', b === btn ? 'true' : 'false'));
+      });
+    });
+
+    urlInput.addEventListener('input', updateThumbnailPreview);
+    urlInput.addEventListener('paste', () => setTimeout(updateThumbnailPreview, 10));
+
+    clearUrlBtn.addEventListener('click', () => {
+      urlInput.value = '';
+      updateThumbnailPreview();
+      hideError();
+      urlInput.focus();
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      stopStream();
+      showView('home');
+    });
+
+    newVideoBtn.addEventListener('click', () => {
+      stopStream();
+      clipsGrid.innerHTML = '';
+      urlInput.value = '';
+      updateThumbnailPreview();
+      hideError();
+      showView('home');
+      setTimeout(() => urlInput.focus(), 100);
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      hideError();
+
+      const url = urlInput.value.trim();
+      if (!url) {
+        showError('Cole o link do vídeo antes de continuar.');
+        urlInput.focus();
+        return;
+      }
+
+      if (!extractYoutubeId(url)) {
+        showError('Esse link não parece ser de um vídeo do YouTube. Verifique e tente novamente.');
+        urlInput.focus();
+        return;
+      }
+
+      stopStream();
+
+      if (state.thumbUrl) {
+        progressThumbImg.src = state.thumbUrl;
+        progressThumbWrap.classList.remove('hidden');
+      } else {
+        progressThumbWrap.classList.add('hidden');
+      }
+
+      setProgress(1, 8, '');
+      showView('progress');
+
+      try {
+        const response = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url,
+            clip_count: state.clipCount,
+            style: state.style,
+          }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.detail || '');
+        }
+
+        const es = new EventSource(`/api/jobs/${data.job_id}/events`);
+        state.eventSource = es;
+
+        es.onmessage = (evt) => {
+          const payload = JSON.parse(evt.data);
+
+          if (payload.status === 'error') {
+            stopStream();
+            showView('home');
+            showError(humanizeError(payload.error));
+            return;
+          }
+
+          if (payload.status === 'done') {
+            stopStream();
+            setProgress(4, 100, payload.message);
+            setTimeout(() => {
+              renderClips(payload.clips || []);
+            }, 350);
+            return;
+          }
+
+          setProgress(payload.stage, payload.progress, payload.message);
+        };
+
+        es.onerror = () => {
+          stopStream();
+          showView('home');
+          showError('A conexão foi interrompida durante o processo. Tente novamente.');
+        };
+      } catch (err) {
+        stopStream();
+        showView('home');
+        showError(humanizeError(err.message));
+      }
+    });
+  </script>
+</body>
+</html>
