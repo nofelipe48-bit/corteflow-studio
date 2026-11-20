@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, urlparse
 
+import yt_dlp
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
@@ -16,11 +17,8 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import (
-    NoTranscriptFound,
-    TranscriptsDisabled,
-    VideoUnavailable,
-)
+from youtube_transcript_api._errors import NoTranscriptFound
+from yt_dlp.utils import download_range_func
 
 # ---------------------------------------------------------------------------
 # Configuração da aplicação e diretórios temporários
@@ -30,6 +28,12 @@ BASE_TEMP_DIR = Path("/tmp/corteflow_jobs")
 BASE_TEMP_DIR.mkdir(parents=True, exist_ok=True)
 JOB_TTL_SECONDS = 3600  # Limpa cortes com mais de 60 minutos para economizar disco no Space
 MAX_TRANSCRIPT_CHARS = 160_000
+
+YTDLP_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["ios", "android"],
+    }
+}
 
 app = FastAPI(
     title="CorteFlow — Cortes Automáticos do YouTube",
@@ -130,8 +134,8 @@ def cleanup_old_jobs() -> None:
             age = now - folder.stat().st_mtime
             if age > JOB_TTL_SECONDS and folder.name not in JOBS:
                 shutil.rmtree(folder, ignore_errors=True)
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"ERRO REAL: {e}", flush=True)
 
 
 def update_job(
@@ -169,7 +173,7 @@ def update_job(
 
 
 # ---------------------------------------------------------------------------
-# Etapa 1: Extração da transcrição com timestamps (youtube-transcript-api)
+# Etapa 1: Extração opcional de legendas + metadados/heatmap via yt-dlp
 # ---------------------------------------------------------------------------
 def _extract_snippet_fields(snippet: Any) -> tuple[float, float, str]:
     """Compatível com youtube-transcript-api v1.x (objetos) e v0.6.x (dicionários)."""
@@ -184,8 +188,11 @@ def _extract_snippet_fields(snippet: Any) -> tuple[float, float, str]:
     return start, duration, text
 
 
-def fetch_transcript_sync(video_id: str) -> tuple[str, float, str]:
-    """Baixa a transcrição priorizando português ou qualquer idioma disponível."""
+def fetch_transcript_optional_sync(video_id: str) -> tuple[str, float, str] | None:
+    """
+    Tenta baixar a transcrição com timestamps (priorizando português).
+    Nunca bloqueia o fluxo: se não houver legenda ou ocorrer erro, registra o log e retorna None.
+    """
     preferred_pt = ["pt", "pt-BR", "pt-PT"]
     preferred_fallback = ["en", "es"]
 
@@ -207,85 +214,81 @@ def fetch_transcript_sync(video_id: str) -> tuple[str, float, str]:
         if selected is None:
             available = list(transcript_list)
             if not available:
-                raise NoTranscriptFound(video_id, preferred_pt, transcript_list)
-            # Prefere legenda manual se existir; caso contrário usa a primeira gerada
+                return None
             manual = [t for t in available if not getattr(t, "is_generated", True)]
             selected = manual[0] if manual else available[0]
 
         fetched = selected.fetch()
         lang_code = getattr(selected, "language_code", "desconhecido")
+        snippets = list(fetched)
+        if not snippets:
+            return None
 
-    except TranscriptsDisabled as exc:
-        raise RuntimeError(
-            "Este vídeo tem as legendas desativadas pelo criador. Escolha uma live ou vídeo com legendas ativadas."
-        ) from exc
-    except NoTranscriptFound as exc:
-        raise RuntimeError(
-            "Nenhuma legenda ou transcrição automática foi encontrada para este vídeo."
-        ) from exc
-    except VideoUnavailable as exc:
-        raise RuntimeError(
-            "Vídeo indisponível, privado ou removido no YouTube."
-        ) from exc
-    except Exception as exc:
-        err_name = exc.__class__.__name__.lower()
-        err_msg = str(exc).lower()
-        if "blocked" in err_name or "ipblocked" in err_name or "too many requests" in err_msg:
-            raise RuntimeError(
-                "O YouTube bloqueou temporariamente a leitura de legendas deste servidor. Tente novamente em alguns minutos."
-            ) from exc
-        if "age" in err_name or "age" in err_msg:
-            raise RuntimeError(
-                "Este vídeo possui restrição de idade e não permite leitura automática de transcrição."
-            ) from exc
-        raise RuntimeError(f"Não foi possível obter a transcrição do vídeo: {exc}") from exc
+        # Agrupa frases curtas em blocos de ~12 segundos para reduzir ruído e economizar tokens
+        blocks: list[tuple[int, str]] = []
+        block_start = -1
+        block_texts: list[str] = []
+        max_end = 0.0
 
-    snippets = list(fetched)
-    if not snippets:
-        raise RuntimeError("A transcrição retornada pelo YouTube está vazia.")
+        for item in snippets:
+            start, duration, text = _extract_snippet_fields(item)
+            max_end = max(max_end, start + max(duration, 1.0))
+            if not text:
+                continue
+            if block_start < 0:
+                block_start = int(start)
+                block_texts = [text]
+            elif start - block_start >= 12:
+                blocks.append((block_start, " ".join(block_texts)))
+                block_start = int(start)
+                block_texts = [text]
+            else:
+                block_texts.append(text)
 
-    # Agrupa frases curtas em blocos de ~12 segundos para reduzir ruído e economizar tokens
-    blocks: list[tuple[int, str]] = []
-    block_start = -1
-    block_texts: list[str] = []
-    max_end = 0.0
-
-    for item in snippets:
-        start, duration, text = _extract_snippet_fields(item)
-        max_end = max(max_end, start + max(duration, 1.0))
-        if not text:
-            continue
-        if block_start < 0:
-            block_start = int(start)
-            block_texts = [text]
-        elif start - block_start >= 12:
+        if block_start >= 0 and block_texts:
             blocks.append((block_start, " ".join(block_texts)))
-            block_start = int(start)
-            block_texts = [text]
-        else:
-            block_texts.append(text)
 
-    if block_start >= 0 and block_texts:
-        blocks.append((block_start, " ".join(block_texts)))
+        if not blocks or max_end < 30:
+            return None
 
-    if max_end < 35:
-        raise RuntimeError(
-            "O vídeo é muito curto (menos de 35 segundos) para gerar cortes de 30 a 60 segundos."
-        )
+        lines = [f"[{sec}s] {txt}" for sec, txt in blocks]
+        formatted = "\n".join(lines)
 
-    lines = [f"[{sec}s] {txt}" for sec, txt in blocks]
-    formatted = "\n".join(lines)
+        if len(formatted) > MAX_TRANSCRIPT_CHARS:
+            step = max(2, len(lines) // (MAX_TRANSCRIPT_CHARS // 95))
+            formatted = "\n".join(lines[::step])[:MAX_TRANSCRIPT_CHARS]
 
-    # Em lives extremamente longas (+5h), condensa linhas proporcionalmente sem perder o arco temporal
-    if len(formatted) > MAX_TRANSCRIPT_CHARS:
-        step = max(2, len(lines) // (MAX_TRANSCRIPT_CHARS // 95))
-        formatted = "\n".join(lines[::step])[:MAX_TRANSCRIPT_CHARS]
+        return formatted, max_end, lang_code
 
-    return formatted, max_end, lang_code
+    except Exception as e:
+        print(f"ERRO REAL: {e}", flush=True)
+        return None
+
+
+def fetch_video_metadata_sync(video_url: str) -> dict[str, Any]:
+    """Obtém duração, título e heatmap ('Mais reproduzidos') via yt-dlp sem baixar o vídeo."""
+    ydl_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "extractor_args": YTDLP_EXTRACTOR_ARGS,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False) or {}
+            return {
+                "title": str(info.get("title") or "").strip(),
+                "duration": float(info.get("duration") or 0.0),
+                "heatmap": info.get("heatmap") or [],
+            }
+    except Exception as e:
+        print(f"ERRO REAL: {e}", flush=True)
+        raise RuntimeError(f"Não foi possível obter os dados do vídeo: {e}") from e
 
 
 # ---------------------------------------------------------------------------
-# Etapa 2: Seleção dos melhores trechos com Gemini 2.5 Flash (JSON estrito)
+# Etapa 2: Seleção dos melhores trechos (Gemini -> Heatmap -> Divisão automática)
 # ---------------------------------------------------------------------------
 STYLE_DIRECTIONS: dict[ClipStyle, str] = {
     "viral": (
@@ -312,9 +315,7 @@ def select_clips_with_gemini_sync(
     """Envia a transcrição para o gemini-2.5-flash exigindo JSON estruturado."""
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError(
-            "Chave GEMINI_API_KEY não encontrada. Configure-a em Settings → Variables and secrets no seu Hugging Face Space."
-        )
+        raise RuntimeError("GEMINI_API_KEY não configurada.")
 
     client = genai.Client(api_key=api_key)
     style_prompt = STYLE_DIRECTIONS.get(style, STYLE_DIRECTIONS["viral"])
@@ -337,31 +338,19 @@ TRANSCRIÇÃO (formato [segundos] texto):
 {transcript}
 """
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=ClipSelectionResponse,
-                temperature=0.4,
-            ),
-        )
-    except Exception as exc:
-        err_text = str(exc)
-        if "API_KEY_INVALID" in err_text or "403" in err_text or "401" in err_text:
-            raise RuntimeError(
-                "A chave GEMINI_API_KEY configurada parece inválida ou sem permissão. Verifique-a nos Secrets do Hugging Face."
-            ) from exc
-        if "429" in err_text or "RESOURCE_EXHAUSTED" in err_text:
-            raise RuntimeError(
-                "Limite de requisições da API do Gemini atingido temporariamente. Aguarde alguns instantes e tente novamente."
-            ) from exc
-        raise RuntimeError(f"Erro ao consultar o Gemini 2.5 Flash: {exc}") from exc
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ClipSelectionResponse,
+            temperature=0.4,
+        ),
+    )
 
     raw_text = (response.text or "").strip()
     if not raw_text:
-        raise RuntimeError("A IA retornou uma resposta vazia ao analisar a transcrição.")
+        raise RuntimeError("A IA retornou uma resposta vazia.")
 
     try:
         parsed = ClipSelectionResponse.model_validate_json(raw_text)
@@ -371,9 +360,8 @@ TRANSCRIÇÃO (formato [segundos] texto):
         parsed = ClipSelectionResponse(clips=[ClipSuggestion(**c) for c in clips_raw])
 
     if not parsed.clips:
-        raise RuntimeError("A IA não identificou momentos elegíveis neste vídeo.")
+        raise RuntimeError("Nenhum momento retornado pela IA.")
 
-    # Sanitiza e garante duração entre 30s e 60s dentro da duração total do vídeo
     normalized: list[dict[str, Any]] = []
     for item in parsed.clips:
         start = max(0.0, round(float(item.start), 1))
@@ -394,7 +382,6 @@ TRANSCRIÇÃO (formato [segundos] texto):
         if final_duration < 15.0:
             continue
 
-        # Evita cortes duplicados/sobrepostos
         overlaps = any(
             not (end <= existing["start"] + 2 or start >= existing["end"] - 2)
             for existing in normalized
@@ -415,16 +402,145 @@ TRANSCRIÇÃO (formato [segundos] texto):
             break
 
     if not normalized:
-        raise RuntimeError(
-            "Os timestamps sugeridos pela IA não eram válidos para a duração deste vídeo. Tente novamente."
-        )
+        raise RuntimeError("Os timestamps retornados pela IA não eram válidos.")
 
     normalized.sort(key=lambda c: c["start"])
     return normalized
 
 
+def _overlaps_existing(start: float, end: float, existing: list[dict[str, Any]], gap: float = 4.0) -> bool:
+    return any(not (end <= c["start"] - gap or start >= c["end"] + gap) for c in existing)
+
+
+def build_fallback_clips(
+    total_duration: float,
+    clip_count: int,
+    heatmap: list[dict[str, Any]] | None = None,
+    video_title: str = "",
+) -> list[dict[str, Any]]:
+    """
+    Seleciona cortes sem depender de legendas:
+    1. Prioriza picos de heatmap ('Mais reproduzidos') do yt-dlp.
+    2. Completa ou divide automaticamente pulando os primeiros e últimos 10% do vídeo
+       em trechos bem distribuídos de 30 a 60 segundos.
+    """
+    if total_duration <= 10:
+        raise RuntimeError("Este vídeo é muito curto para gerar cortes.")
+
+    # Define janela útil pulando os primeiros 10% e últimos 10% do vídeo
+    usable_start = round(total_duration * 0.10, 1)
+    usable_end = round(total_duration * 0.90, 1)
+    if usable_end - usable_start < 30.0:
+        usable_start = 0.0
+        usable_end = total_duration
+
+    usable_span = max(1.0, usable_end - usable_start)
+    # Duração alvo entre 30s e 60s adaptada ao tamanho disponível
+    if usable_span >= clip_count * 50.0:
+        target_len = 45.0
+    elif usable_span >= clip_count * 35.0:
+        target_len = 35.0
+    elif usable_span >= clip_count * 30.0:
+        target_len = 30.0
+    else:
+        target_len = max(15.0, min(45.0, round(usable_span / clip_count, 1)))
+
+    selected: list[dict[str, Any]] = []
+
+    # 1) Tenta aproveitar os picos do heatmap ("Mais reproduzidos")
+    valid_points: list[tuple[float, float, float]] = []
+    for entry in heatmap or []:
+        try:
+            h_start = float(entry.get("start_time", 0.0))
+            h_end = float(entry.get("end_time", h_start))
+            h_val = float(entry.get("value", 0.0))
+            center = (h_start + h_end) / 2.0
+            if usable_start <= center <= usable_end:
+                valid_points.append((h_val, h_start, h_end))
+        except Exception as e:
+            print(f"ERRO REAL: {e}", flush=True)
+            continue
+
+    valid_points.sort(key=lambda item: item[0], reverse=True)
+
+    for rank, (_, h_start, h_end) in enumerate(valid_points, start=1):
+        if len(selected) >= clip_count:
+            break
+        center = (h_start + h_end) / 2.0
+        half = target_len / 2.0
+        start = max(usable_start, round(center - half, 1))
+        end = min(usable_end, round(start + target_len, 1))
+        if end - start < min(30.0, target_len):
+            start = max(0.0, round(end - target_len, 1))
+        duration = round(end - start, 1)
+        if duration < 10.0 or _overlaps_existing(start, end, selected):
+            continue
+
+        selected.append(
+            {
+                "start": start,
+                "end": end,
+                "duration": duration,
+                "title": f"Momento mais reproduzido #{len(selected) + 1}",
+                "reason": "Trecho selecionado automaticamente a partir dos picos mais assistidos do vídeo.",
+            }
+        )
+
+    # 2) Completa (ou cria todos) com divisão automática bem distribuída entre 10% e 90%
+    if len(selected) < clip_count:
+        remaining = clip_count - len(selected)
+        # Se já temos alguns do heatmap, gera candidatos distribuídos e preenche lacunas sem sobreposição
+        candidate_slots = clip_count if not selected else clip_count * 2
+        step = max(1.0, (usable_span - target_len) / max(1, candidate_slots - 1))
+
+        for i in range(candidate_slots):
+            if len(selected) >= clip_count:
+                break
+            start = round(usable_start + i * step, 1)
+            end = min(usable_end, round(start + target_len, 1))
+            if end - start < min(30.0, target_len):
+                start = max(0.0, round(end - target_len, 1))
+            duration = round(end - start, 1)
+            if duration < 10.0:
+                continue
+            if _overlaps_existing(start, end, selected, gap=2.0):
+                continue
+
+            clip_num = len(selected) + 1
+            short_title = f"Destaque #{clip_num}"
+            if video_title:
+                clean_base = video_title[:48].rstrip(" -|:")
+                short_title = f"{clean_base} — Parte {clip_num}"
+
+            selected.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "duration": duration,
+                    "title": short_title,
+                    "reason": "Trecho selecionado automaticamente de forma equilibrada ao longo do vídeo.",
+                }
+            )
+
+    if not selected:
+        # Garantia final para vídeos muito curtos sem perder o corte
+        fallback_len = min(45.0, max(10.0, total_duration - 2.0))
+        selected.append(
+            {
+                "start": 0.0,
+                "end": round(fallback_len, 1),
+                "duration": round(fallback_len, 1),
+                "title": "Destaque #1",
+                "reason": "Trecho principal do vídeo.",
+            }
+        )
+
+    selected.sort(key=lambda c: c["start"])
+    return selected[:clip_count]
+
+
 # ---------------------------------------------------------------------------
-# Etapa 3: Download parcial com yt-dlp + recorte vertical 9:16 com FFmpeg
+# Etapa 3: Download parcial com yt-dlp (player_client ios/android) + FFmpeg 9:16
 # ---------------------------------------------------------------------------
 async def run_subprocess(cmd: list[str], timeout: int = 240) -> tuple[int, str]:
     """Executa subprocesso de forma assíncrona sem travar o loop SSE do FastAPI."""
@@ -435,13 +551,40 @@ async def run_subprocess(cmd: list[str], timeout: int = 240) -> tuple[int, str]:
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
+        print(f"ERRO REAL: {e}", flush=True)
         proc.kill()
         await proc.wait()
-        raise RuntimeError("Tempo limite excedido ao baixar ou converter um trecho do vídeo.")
+        raise RuntimeError("Tempo limite excedido ao processar um trecho do vídeo.") from e
 
     output = (stderr or stdout or b"").decode("utf-8", errors="ignore").strip()
     return proc.returncode or 0, output
+
+
+def download_section_sync(
+    video_url: str,
+    start: float,
+    end: float,
+    raw_template: Path,
+) -> None:
+    """Baixa apenas o intervalo [start, end] usando yt-dlp com player_client ['ios', 'android']."""
+    ydl_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best",
+        "merge_output_format": "mp4",
+        "outtmpl": str(raw_template),
+        "download_ranges": download_range_func(None, [(float(start), float(end))]),
+        "force_keyframes_at_cuts": True,
+        "extractor_args": YTDLP_EXTRACTOR_ARGS,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+    except Exception as e:
+        print(f"ERRO REAL: {e}", flush=True)
+        raise RuntimeError(f"Falha ao baixar trecho do vídeo: {e}") from e
 
 
 async def cut_and_crop_clip(
@@ -451,33 +594,17 @@ async def cut_and_crop_clip(
     job_dir: Path,
     clip_index: int,
 ) -> Path:
-    """Baixa apenas o intervalo escolhido via yt-dlp --download-sections e converte para 9:16 limpo."""
+    """Baixa apenas o intervalo escolhido via yt-dlp e converte para 9:16 limpo com FFmpeg."""
     raw_template = job_dir / f"raw_{clip_index}.%(ext)s"
     final_path = job_dir / f"corte_{clip_index:02d}.mp4"
 
-    # Baixa apenas o trecho exato (até 1080p) economizando RAM, CPU e banda no Hugging Face
-    yt_cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "--no-warnings",
-        "--quiet",
-        "-f",
-        "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[height<=1080]/best",
-        "--merge-output-format",
-        "mp4",
-        "--download-sections",
-        f"*{start:.2f}-{end:.2f}",
-        "--force-keyframes-at-cuts",
-        "-o",
-        str(raw_template),
-        video_url,
-    ]
+    await asyncio.to_thread(download_section_sync, video_url, start, end, raw_template)
 
-    code, err_out = await run_subprocess(yt_cmd, timeout=240)
     downloaded_candidates = sorted(job_dir.glob(f"raw_{clip_index}.*"))
-    if code != 0 or not downloaded_candidates:
-        detail = err_out.splitlines()[-1] if err_out else "Erro desconhecido no yt-dlp."
-        raise RuntimeError(f"Falha ao baixar trecho {clip_index} do YouTube: {detail}")
+    if not downloaded_candidates:
+        err = RuntimeError(f"Arquivo temporário do trecho {clip_index} não foi criado pelo yt-dlp.")
+        print(f"ERRO REAL: {err}", flush=True)
+        raise err
 
     source_file = downloaded_candidates[0]
 
@@ -516,7 +643,9 @@ async def cut_and_crop_clip(
         ff_code, ff_err = await run_subprocess(ff_cmd, timeout=240)
         if ff_code != 0 or not final_path.exists():
             detail = ff_err.splitlines()[-1] if ff_err else "Erro desconhecido no FFmpeg."
-            raise RuntimeError(f"Falha ao converter corte {clip_index} para 9:16: {detail}")
+            err = RuntimeError(f"Falha ao converter corte {clip_index} para 9:16: {detail}")
+            print(f"ERRO REAL: {err}", flush=True)
+            raise err
     finally:
         # Remove o trecho bruto imediatamente para economizar disco
         for temp_file in downloaded_candidates:
@@ -534,32 +663,53 @@ async def process_job(job_id: str, video_id: str, clip_count: int, style: ClipSt
     job_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Etapa 1: Lendo transcrição
+        # Etapa 1: Lendo transcrição (opcional — nunca bloqueia se não houver legendas)
         update_job(
             job_id,
             status="running",
             stage=1,
             progress=12,
-            message="Etapa 1: Lendo transcrição do vídeo no YouTube...",
+            message="Etapa 1: Lendo informações do vídeo...",
         )
-        transcript_text, total_duration, lang_code = await asyncio.to_thread(
-            fetch_transcript_sync, video_id
-        )
+        transcript_result = await asyncio.to_thread(fetch_transcript_optional_sync, video_id)
 
-        # Etapa 2: IA escolhendo melhores momentos
+        # Etapa 2: Escolhendo os melhores momentos (Gemini com legenda -> fallback Heatmap / Distribuição)
         update_job(
             job_id,
             stage=2,
             progress=32,
-            message=f"Etapa 2: Gemini 2.5 Flash analisando transcrição ({lang_code}) no estilo {style}...",
+            message="Etapa 2: Escolhendo os melhores momentos...",
         )
-        suggestions = await asyncio.to_thread(
-            select_clips_with_gemini_sync,
-            transcript_text,
-            total_duration,
-            clip_count,
-            style,
-        )
+
+        suggestions: list[dict[str, Any]] = []
+
+        if transcript_result is not None and os.environ.get("GEMINI_API_KEY", "").strip():
+            transcript_text, total_duration, _ = transcript_result
+            try:
+                suggestions = await asyncio.to_thread(
+                    select_clips_with_gemini_sync,
+                    transcript_text,
+                    total_duration,
+                    clip_count,
+                    style,
+                )
+            except Exception as e:
+                print(f"ERRO REAL: {e}", flush=True)
+                suggestions = []
+
+        # Se não houve legenda ou o Gemini falhou, usa heatmap ("Mais reproduzidos") ou divisão automática
+        if not suggestions:
+            metadata = await asyncio.to_thread(fetch_video_metadata_sync, video_url)
+            total_duration = metadata["duration"]
+            if total_duration <= 0 and transcript_result is not None:
+                total_duration = transcript_result[1]
+
+            suggestions = build_fallback_clips(
+                total_duration=total_duration,
+                clip_count=clip_count,
+                heatmap=metadata.get("heatmap"),
+                video_title=metadata.get("title", ""),
+            )
 
         # Etapa 3: Cortando vídeos
         total_clips = len(suggestions)
@@ -595,8 +745,9 @@ async def process_job(job_id: str, video_id: str, clip_count: int, style: ClipSt
                         "download_url": f"/api/clips/{job_id}/{output_file.name}?download=1",
                     }
                 )
-            except Exception as clip_err:
-                failed_errors.append(str(clip_err))
+            except Exception as e:
+                print(f"ERRO REAL: {e}", flush=True)
+                failed_errors.append(str(e))
 
         if not ready_clips:
             reason = failed_errors[0] if failed_errors else "Não foi possível gerar nenhum corte."
@@ -608,16 +759,17 @@ async def process_job(job_id: str, video_id: str, clip_count: int, style: ClipSt
             status="done",
             stage=4,
             progress=100,
-            message=f"Etapa 4: Pronto! {len(ready_clips)} corte(s) vertical(is) 9:16 gerados com sucesso.",
+            message=f"Etapa 4: Pronto! {len(ready_clips)} corte(s) gerados com sucesso.",
             clips=ready_clips,
         )
 
-    except Exception as exc:
+    except Exception as e:
+        print(f"ERRO REAL: {e}", flush=True)
         update_job(
             job_id,
             status="error",
             message="Ocorreu um erro durante o processamento.",
-            error=str(exc),
+            error=str(e),
         )
 
 
@@ -647,17 +799,9 @@ async def create_job(payload: CreateJobRequest) -> dict[str, str]:
 
     try:
         video_id = extract_video_id(payload.url)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if not os.environ.get("GEMINI_API_KEY", "").strip():
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Variável de ambiente GEMINI_API_KEY não configurada no servidor. "
-                "Adicione sua chave em Settings → Variables and secrets no Hugging Face Spaces."
-            ),
-        )
+    except ValueError as e:
+        print(f"ERRO REAL: {e}", flush=True)
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     job_id = uuid.uuid4().hex[:12]
     JOBS[job_id] = {
@@ -666,7 +810,7 @@ async def create_job(payload: CreateJobRequest) -> dict[str, str]:
         "status": "running",
         "stage": 1,
         "progress": 5,
-        "message": "Iniciando processamento da live...",
+        "message": "Iniciando processamento...",
         "clips": [],
         "error": None,
         "created_at": time.time(),
